@@ -28,7 +28,8 @@ By the end of the module, you will have made a beautiful, dark-mode enabled weat
 * Learn to use Core Location to get the current location from the phone GPS.
   
 
->This is a companion project to The App Brewery's Complete App Development Bootcamp [www.appbrewery.co](https://www.appbrewery.co/)
->Copyright © 2023 App Brewery. All rights reserved.
-
 ![End Banner](Documentation/readme-end-banner.png)
+
+>This is a companion project to The App Brewery's Complete App Development Bootcamp 
+
+Copyright © 2023 App Brewery. All rights reserved. [www.appbrewery.co](https://www.appbrewery.co/)
