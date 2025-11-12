@@ -3,70 +3,95 @@
 //  Clima
 //
 //  Created by Volodymyr Kryvytskyi on 09.08.2023.
-//  Copyright © 2023 App Brewery. All rights reserved.
 //
 
-import UIKit
+import Foundation
 import CoreLocation
 
-protocol WeatherManagerDelegate {
-    func didUpdateWeather(_ weatherManager: WeatherManager, weather: WeatherModel)
-    func didFailWithError(error: Error)
-}
+enum WeatherError: Error, LocalizedError {
+    case invalidURL
+    case missingAPIKey
+    case httpStatus(Int)
+    case noData
+    case decoding(Error)
 
-struct WeatherManager {
-    let weatherURL = "https://api.openweathermap.org/data/2.5/weather?appid=4955f7f3471b902ccf4e876033632d12&units=metric"
-    
-    var delegate: WeatherManagerDelegate?
-    
-    func fetchWeather(cityName: String) {
-        let urlString = "\(weatherURL)&q=\(cityName)"
-        performRequest(with: urlString)
-    }
-    
-    func fetchWeather(latitude: CLLocationDegrees, longitude: CLLocationDegrees) {
-        let urlString = "\(weatherURL)&lat=\(latitude)&lon=\(longitude)"
-        performRequest(with: urlString)
-    }
-    
-    func performRequest(with urlString: String) {
-        
-        if let url = URL(string: urlString) {
-            let session = URLSession(configuration: .default)
-            
-            let task = session.dataTask(with: url) { data, response, error in
-                if error != nil {
-                    delegate?.didFailWithError(error: error!)
-                    return
-                }
-                
-                if let safeData = data  {
-                    //Try without .self
-                    if let weather = parseJSON(safeData) {
-                        delegate?.didUpdateWeather(self, weather: weather)
-                    }
-                }
-            }
-            
-            task.resume()
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL:
+            return "Failed to build a valid URL."
+        case .missingAPIKey:
+            return "Missing OpenWeather API key."
+        case .httpStatus(let code):
+            return "Server returned status code \(code)."
+        case .noData:
+            return "No data received from server."
+        case .decoding(let error):
+            return "Failed to parse weather data: \(error.localizedDescription)"
         }
     }
-    
-    func parseJSON(_ weatherData: Data) -> WeatherModel? {
-        let decoder = JSONDecoder()
+}
+
+final class WeatherManager: @unchecked Sendable {
+
+    private let session: URLSession
+    private let baseURL = URL(string: "https://api.openweathermap.org/data/2.5/weather")!
+
+    private var apiKey: String {
+        (Bundle.main.object(forInfoDictionaryKey: "OPENWEATHER_API_KEY") as? String) ?? ""
+    }
+
+    init(session: URLSession = .shared) {
+        self.session = session
+    }
+
+    // Run on the caller's actor to avoid cross-actor sends.
+    nonisolated(nonsending)
+    func weather(for city: String) async throws -> WeatherModel {
+        let url = try buildURL(queryItems: [URLQueryItem(name: "q", value: city)])
+        return try await fetchWeather(from: url)
+    }
+
+    nonisolated(nonsending)
+    func weather(latitude: CLLocationDegrees, longitude: CLLocationDegrees) async throws -> WeatherModel {
+        let url = try buildURL(queryItems: [
+            URLQueryItem(name: "lat", value: String(latitude)),
+            URLQueryItem(name: "lon", value: String(longitude))
+        ])
+        return try await fetchWeather(from: url)
+    }
+
+    private func buildURL(queryItems extra: [URLQueryItem]) throws -> URL {
+        guard apiKey.isEmpty == false else { throw WeatherError.missingAPIKey }
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
+        var items: [URLQueryItem] = [
+            URLQueryItem(name: "appid", value: apiKey),
+            URLQueryItem(name: "units", value: "metric")
+        ]
+        items.append(contentsOf: extra)
+        components?.queryItems = items
+        guard let url = components?.url else { throw WeatherError.invalidURL }
+        return url
+    }
+
+    private func fetchWeather(from url: URL) async throws -> WeatherModel {
+        let (data, response) = try await session.data(from: url)
+
+        guard let http = response as? HTTPURLResponse else {
+            throw WeatherError.noData
+        }
+        guard (200...299).contains(http.statusCode) else {
+            throw WeatherError.httpStatus(http.statusCode)
+        }
+
         do {
-            
-            let decodedData = try decoder.decode(WeatherData.self, from: weatherData)
-            let id = decodedData.weather[0].id
-            let temp = decodedData.main.temp
-            let name = decodedData.name
-            
-            let weather = WeatherModel(conditionId: id, cityName: name, temperature: temp)
-            return weather
-            
+            let decoded = try JSONDecoder().decode(WeatherData.self, from: data)
+            return WeatherModel(
+                conditionId: decoded.weather.first?.id ?? 800,
+                cityName: decoded.name,
+                temperature: decoded.main.temp
+            )
         } catch {
-            delegate?.didFailWithError(error: error)
-            return nil
+            throw WeatherError.decoding(error)
         }
     }
 }

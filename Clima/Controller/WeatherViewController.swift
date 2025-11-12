@@ -3,12 +3,12 @@
 //  Clima
 //
 //  Created by Volodymyr Kryvytskyi on 21.07.2023.
-//  Copyright © 2023 App Brewery. All rights reserved.
 //
 
 import UIKit
 import CoreLocation
 
+@MainActor
 class WeatherViewController: UIViewController {
     
     @IBOutlet weak var conditionImageView: UIImageView!
@@ -16,85 +16,120 @@ class WeatherViewController: UIViewController {
     @IBOutlet weak var cityLabel: UILabel!
     @IBOutlet weak var searchTextField: UITextField!
     
-    var weatherManager = WeatherManager()
-    let locationManager = CLLocationManager()
+    private let weatherManager = WeatherManager()
+    private let locationManager = CLLocationManager()
     
     override func viewDidLoad() {
         super.viewDidLoad()
         
         locationManager.delegate = self
-        locationManager.requestWhenInUseAuthorization()
-        locationManager.requestLocation()
-        
-        
-        weatherManager.delegate = self
+        locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         searchTextField.delegate = self
+        
+        // Ask for permission only; actual location will be requested later.
+        locationManager.requestWhenInUseAuthorization()
+    }
+
+    private func render(weather: WeatherModel) {
+        temperatureLabel.text = weather.temperatureString
+        conditionImageView.image = UIImage(systemName: weather.conditionName)
+        cityLabel.text = weather.cityName
+    }
+
+    private func presentError(_ error: Error) {
+        let message: String
+        if let clError = error as? CLError {
+            switch clError.code {
+            case .denied:
+                message = "Location access denied. Enable it in Settings."
+            case .locationUnknown:
+                message = "Temporary issue getting your location. Try again."
+            default:
+                message = clError.localizedDescription
+            }
+        } else if let localized = error as? LocalizedError, let desc = localized.errorDescription {
+            message = desc
+        } else {
+            message = (error as NSError).localizedDescription
+        }
+        
+        let alert = UIAlertController(title: "Error", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Dismiss", style: .default))
+        present(alert, animated: true)
     }
 }
 
-//MARK: - UITextFieldDelegate
-
-extension  WeatherViewController: UITextFieldDelegate {
+// MARK: - UITextFieldDelegate
+extension WeatherViewController: UITextFieldDelegate {
     @IBAction func searchPressed(_ sender: UIButton) {
         searchTextField.endEditing(true)
-        print(searchTextField.text!)
     }
     
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
         searchTextField.endEditing(true)
-        
         return true
     }
     
     func textFieldShouldEndEditing(_ textField: UITextField) -> Bool {
-        if textField.text != "" {
+        if let text = textField.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+           text.isEmpty == false {
             return true
         } else {
-            textField.placeholder = "Type something"
+            textField.placeholder = "Type a city name"
             return false
         }
     }
     
     func textFieldDidEndEditing(_ textField: UITextField) {
-        if let city = searchTextField.text {
-            weatherManager.fetchWeather(cityName: city)
-        }
-        
+        guard let city = searchTextField.text?.trimmingCharacters(in: .whitespacesAndNewlines),
+              city.isEmpty == false else { return }
         searchTextField.text = ""
-    }
-}
 
-//MARK: - WeatherManagerDelegate
-
-extension  WeatherViewController: WeatherManagerDelegate {
-    func didUpdateWeather(_ weatherManager: WeatherManager, weather: WeatherModel) {
-        DispatchQueue.main.async {
-            self.temperatureLabel.text = weather.temperatureString
-            self.conditionImageView.image = UIImage(systemName: weather.conditionName)
-            self.cityLabel.text = weather.cityName
+        Task {
+            do {
+                let model = try await weatherManager.weather(for: city)
+                render(weather: model)
+            } catch {
+                presentError(error)
+            }
         }
     }
-    
-    func didFailWithError(error: Error) {
-        print(error)
-    }
 }
 
-//MARK: - CLLocationManagerDelegate
-
-extension  WeatherViewController: CLLocationManagerDelegate {
+// MARK: - CLLocationManagerDelegate
+extension WeatherViewController: @MainActor CLLocationManagerDelegate {
     
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        switch manager.authorizationStatus {
+        case .notDetermined:
+            break
+        case .restricted, .denied:
+            // Optionally inform the user to enable location in Settings.
+            break
+        case .authorizedWhenInUse, .authorizedAlways:
+            manager.requestLocation()
+        @unknown default:
+            break
+        }
+    }
+
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        if let location = locations.last {
-            locationManager.stopUpdatingLocation()
-            let lat = location.coordinate.latitude
-            let lon = location.coordinate.longitude
-            weatherManager.fetchWeather(latitude: lat, longitude: lon)
+        guard let location = locations.last else { return }
+        let lat = location.coordinate.latitude
+        let lon = location.coordinate.longitude
+
+        Task {
+            do {
+                let model = try await weatherManager.weather(latitude: lat, longitude: lon)
+                render(weather: model)
+            } catch {
+                presentError(error)
+            }
         }
     }
     
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        print(error)
+        presentError(error)
     }
     
     @IBAction func locationPressed(_ sender: UIButton) {

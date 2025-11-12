@@ -3,10 +3,9 @@
 //  Clima
 //
 //  Created by Volodymyr Kryvytskyi on 17.08.2023.
-//  Copyright © 2023 App Brewery. All rights reserved.
 //
 
-import UIKit
+import Foundation
 
 struct WeatherData: Codable {
     let name: String
